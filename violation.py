@@ -5,141 +5,129 @@ from ultralytics import YOLO
 from tracker import *
 from detect import *
 
-model = YOLO('yolov9e.pt')
+class TrafficViolationProcessor:
+    def __init__(self, video_path, coordinate_file='toado.txt'):
+        self.model = YOLO('yolov9e.pt')
+        self.class_list = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+        self.tracking_class = [2, 3, 5, 7, 9]  # car, motorcycle, bus, truck
+        self.traffic_light_detector = TrafficLightDetector()
+        self.tracker = Tracker()
 
-class_list = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+        self.cap = cv2.VideoCapture(video_path)
 
-tracking_class = [2, 3, 5, 7, 9]  # car, motorcycle, bus, truck
-count = 0
+        self.width = 1420
+        self.height = 980
+        self.conf_threshold = 0.5
 
-traffic_light_detector = TrafficLightDetector()
-tracker = Tracker()
+        self.output_video = cv2.VideoWriter('output_video.avi', cv2.VideoWriter_fourcc(*'XVID'), 30, (self.width, self.height))
 
-# Video
-cap = cv2.VideoCapture('C:/Users/Duong/PycharmProjects/nienluannganh/traffic_violations/data/1.mp4')
+        self.vipham_dir = 'vipham'
+        if not os.path.exists(self.vipham_dir):
+            os.makedirs(self.vipham_dir)
 
-# Kích thước của video đầu vào và các thông số khác
-width = 1420
-height = 980
-conf_threshold = 0.5
+        self.violate = {}
+        self.traffic_light_colors = {}
+        self.counter_violate = set()
 
-# Khởi tạo video writer sử dụng kích thước của video đầu vào
-output_video = cv2.VideoWriter('output_video.avi', cv2.VideoWriter_fourcc(*'XVID'), 30, (width, height))
+        self.x1_f, self.y1_f, self.x2_f, self.y2_f = self.read_coordinates_from_file(coordinate_file)
+        print("x1 =", self.x1_f)
+        print("y1 =", self.y1_f)
+        print("x2 =", self.x2_f)
+        print("y2 =", self.y2_f)
 
-# Tạo thư mục vipham nếu chưa tồn tại
-vipham_dir = 'vipham'
-if not os.path.exists(vipham_dir):
-    os.makedirs(vipham_dir)
+    def read_coordinates_from_file(self, toado_file):
+        x1_f, y1_f, x2_f, y2_f = 0, 0, 0, 0
+        with open(toado_file, 'r') as file:
+            lines = file.readlines()
+            for line in lines:
+                coordinates = line.strip().split(',')
+                for coord in coordinates:
+                    if coord.startswith('x1='):
+                        x1_f = int(coord.split('=')[1])
+                    elif coord.startswith('y1='):
+                        y1_f = int(coord.split('=')[1])
+                    elif coord.startswith('x2='):
+                        x2_f = int(coord.split('=')[1])
+                    elif coord.startswith('y2='):
+                        y2_f = int(coord.split('=')[1])
+        return x1_f, y1_f, x2_f, y2_f
 
-violate = {}
-traffic_light_colors = {}
-counter_violate = set()
+    def process(self):
+        count = 0
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+            count += 1
 
-# Đọc và lưu giá trị x1, y1, x2, y2 từ file tọa độ
-def read_coordinates_from_file(toado_file):
-    x1_f, y1_f, x2_f, y2_f = 0, 0, 0, 0
-    with open(toado_file, 'r') as file:
-        lines = file.readlines()
-        for line in lines:
-            # Phân tích tọa độ từ dòng văn bản
-            coordinates = line.strip().split(',')
-            for coord in coordinates:
-                if coord.startswith('x1='):
-                    x1_f = int(coord.split('=')[1])
-                elif coord.startswith('y1='):
-                    y1_f = int(coord.split('=')[1])
-                elif coord.startswith('x2='):
-                    x2_f = int(coord.split('=')[1])
-                elif coord.startswith('y2='):
-                    y2_f = int(coord.split('=')[1])
-    return x1_f, y1_f, x2_f, y2_f
+            frame = cv2.resize(frame, (self.width, self.height))
 
-# Sử dụng hàm để đọc giá trị từ file
-x1_f, y1_f, x2_f, y2_f = read_coordinates_from_file('toado.txt')
-print("x1 =", x1_f)
-print("y1 =", y1_f)
-print("x2 =", x2_f)
-print("y2 =", y2_f)
+            results = self.model.predict(frame, classes=[2, 3, 5, 7, 9], conf=self.conf_threshold)
 
-while True:
-    ret,frame = cap.read()
-    if not ret:
-        break
-    count += 1
+            a = results[0].boxes.data
+            a = a.detach().cpu().numpy()
+            px = pd.DataFrame(a).astype("float")
 
-    frame = cv2.resize(frame, (width, height))
+            detections = []
 
-    results = model.predict(frame, classes=[2, 3, 5, 7, 9], conf=conf_threshold)
+            for index, row in px.iterrows():
+                x1 = int(row[0])
+                y1 = int(row[1])
+                x2 = int(row[2])
+                y2 = int(row[3])
+                d = int(row[5])
+                c = self.class_list[d]
+                if d in self.tracking_class:
+                    if d == 9:
+                        frame, traffic_light_color = self.traffic_light_detector.detect_traffic_light_color(frame, (x1, y1, x2 - x1, y2 - y1))
+                        self.traffic_light_colors[(x1, y1, x2, y2)] = traffic_light_color
+                    else:
+                        detections.append([x1, y1, x2, y2])
 
-    a = results[0].boxes.data
-    a = a.detach().cpu().numpy()
-    px = pd.DataFrame(a).astype("float")
+            bbox_id = self.tracker.update(detections)
+            if traffic_light_color in ['red', 'yellow']:
+                for bbox in bbox_id:
+                    x3, y3, x4, y4, id = bbox
+                    cx = int(x3 + x4) // 2
+                    cy = int(y3 + y4) // 2
+                    cv2.rectangle(frame, (x3, y3), (x4, y4), (0, 255, 0), 2)  # Draw bounding box
 
-    list = []
+                    y = self.y1_f
+                    offset = 5
 
-    for index, row in px.iterrows():
-        x1 = int(row[0])
-        y1 = int(row[1])
-        x2 = int(row[2])
-        y2 = int(row[3])
-        d = int(row[5])
-        c = class_list[d]
-        if d in tracking_class:
-            if d == 9:  # Nếu đối tượng là đèn giao thông
-                frame, traffic_light_color = traffic_light_detector.detect_traffic_light_color(frame, (x1, y1, x2 - x1, y2 - y1))
-                traffic_light_colors[(x1, y1, x2, y2)] = traffic_light_color
-            else:
-                list.append([x1, y1, x2, y2])
+                    if y < (cy + offset) and y > (cy - offset):
+                        self.violate[id] = cy
+                        if id in self.violate:
+                            cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
+                            cv2.putText(frame, str(id), (cx, cy), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 255, 255), 2)
+                            self.counter_violate.add(id)
 
-    bbox_id = tracker.update(list)
-    if traffic_light_color in ['red', 'yellow']:
-        for bbox in bbox_id:
-            x3, y3, x4, y4, id = bbox
-            cx = int(x3 + x4) // 2
-            cy = int(y3 + y4) // 2
-            cv2.rectangle(frame, (x3, y3), (x4, y4), (0, 255, 0), 2)  # Draw bounding box
+                            padding = 20
+                            x1_crop = max(0, x3 - padding)
+                            y1_crop = max(0, y3 - padding)
+                            x2_crop = min(frame.shape[1], x4 + padding)
+                            y2_crop = min(frame.shape[0], y4 + padding)
+                            violate_img = frame[y1_crop:y2_crop, x1_crop:x2_crop]
 
-            y = y1_f
-            offset = 10
+                            violate_path = os.path.join(self.vipham_dir, f"violate_{id}.jpg")
+                            cv2.imwrite(violate_path, violate_img)
 
-            # Kiểm tra nếu xe di chuyển qua đường và màu đèn giao thông là đỏ hoặc vàng
-            if y < (cy + offset) and y > (cy - offset):
-                violate[id] = cy
-                if id in violate:
-                    cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
-                    cv2.putText(frame, str(id), (cx, cy), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 255, 255), 2)
-                    counter_violate.add(id)
+            text_color = (255, 255, 255)
+            red_color = (0, 0, 255)  # (B, G, R)
 
-                    # Cắt vùng hình ảnh lớn hơn bounding box của phương tiện vi phạm
-                    padding = 20
-                    x1_crop = max(0, x3 - padding)
-                    y1_crop = max(0, y3 - padding)
-                    x2_crop = min(frame.shape[1], x4 + padding)
-                    y2_crop = min(frame.shape[0], y4 + padding)
-                    violate_img = frame[y1_crop:y2_crop, x1_crop:x2_crop]
+            cv2.line(frame, (self.x1_f, self.y1_f), (self.x2_f, self.y2_f), red_color, 3)
 
-                    # Lưu hình ảnh vào thư mục vipham
-                    violate_path = os.path.join(vipham_dir, f"violate_{id}.jpg")
-                    cv2.imwrite(violate_path, violate_img)
+            cv2.putText(frame, 'red line', (self.x1_f, self.y1_f), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1, cv2.LINE_AA)
 
-    text_color = (255, 255, 255)
-    red_color = (0, 0, 255)  # (B, G, R)
+            wards = len(self.counter_violate)
+            cv2.putText(frame, ('Vi pham - ') + str(wards), (60, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, red_color, 1, cv2.LINE_AA)
 
-    # Vẽ đường từ các tọa độ
-    cv2.line(frame, (x1_f, y1_f), (x2_f, y2_f), red_color, 3)
+            cv2.imshow("frames", frame)
 
-    # Hiển thị văn bản
-    cv2.putText(frame, 'red line', (x1_f, y1_f), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1, cv2.LINE_AA)
+            self.output_video.write(frame)
 
-    wards = len(counter_violate)
-    cv2.putText(frame, ('Vi pham - ') + str(wards), (60, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, red_color, 1, cv2.LINE_AA)
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
 
-    cv2.imshow("frames", frame)
-
-    output_video.write(frame)
-
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+        self.cap.release()
+        cv2.destroyAllWindows()
