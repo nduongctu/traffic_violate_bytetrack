@@ -1,6 +1,6 @@
 import cv2
 import os
-import pandas as pd
+import pandas as pdD
 from ultralytics import YOLO
 from tracker import *
 from detect import *
@@ -28,6 +28,9 @@ class TrafficViolationProcessor:
         self.violate = {}
         self.traffic_light_colors = {}
         self.counter_violate = set()
+        # Các phần khác của constructor
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)  # Lấy thông tin FPS của video
+        self.count_frame = 0  # Thêm biến count để đếm số frame
 
         self.x1_f, self.y1_f, self.x2_f, self.y2_f = self.read_coordinates_from_file(coordinate_file)
         print("x1 =", self.x1_f)
@@ -53,12 +56,15 @@ class TrafficViolationProcessor:
         return x1_f, y1_f, x2_f, y2_f
 
     def process(self):
+        violations = []  # Tạo danh sách để lưu trữ thông tin vi phạm
         count = 0
         while True:
             ret, frame = self.cap.read()
             if not ret:
                 break
             count += 1
+            self.count_frame += 1
+            second = self.count_frame / self.fps
 
             frame = cv2.resize(frame, (self.width, self.height))
 
@@ -79,7 +85,8 @@ class TrafficViolationProcessor:
                 c = self.class_list[d]
                 if d in self.tracking_class:
                     if d == 9:
-                        frame, traffic_light_color = self.traffic_light_detector.detect_traffic_light_color(frame, (x1, y1, x2 - x1, y2 - y1))
+                        frame, traffic_light_color = self.traffic_light_detector.detect_traffic_light_color(frame, (
+                            x1, y1, x2 - x1, y2 - y1))
                         self.traffic_light_colors[(x1, y1, x2, y2)] = traffic_light_color
                     else:
                         detections.append([x1, y1, x2, y2])
@@ -93,7 +100,7 @@ class TrafficViolationProcessor:
                     cv2.rectangle(frame, (x3, y3), (x4, y4), (0, 255, 0), 2)  # Draw bounding box
 
                     y = self.y1_f
-                    offset = 5
+                    offset = 2
 
                     if y < (cy + offset) and y > (cy - offset):
                         self.violate[id] = cy
@@ -102,12 +109,15 @@ class TrafficViolationProcessor:
                             cv2.putText(frame, str(id), (cx, cy), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0, 255, 255), 2)
                             self.counter_violate.add(id)
 
-                            padding = 20
+                            padding = 50
                             x1_crop = max(0, x3 - padding)
                             y1_crop = max(0, y3 - padding)
                             x2_crop = min(frame.shape[1], x4 + padding)
                             y2_crop = min(frame.shape[0], y4 + padding)
                             violate_img = frame[y1_crop:y2_crop, x1_crop:x2_crop]
+
+                            violation_info = f"Giây thứ {second:.2f} - Xe vượt đèn đỏ"
+                            violations.append(violation_info)  # Thêm thông tin vi phạm vào danh sách
 
                             violate_path = os.path.join(self.vipham_dir, f"violate_{id}.jpg")
                             cv2.imwrite(violate_path, violate_img)
@@ -117,10 +127,12 @@ class TrafficViolationProcessor:
 
             cv2.line(frame, (self.x1_f, self.y1_f), (self.x2_f, self.y2_f), red_color, 3)
 
-            cv2.putText(frame, 'red line', (self.x1_f, self.y1_f), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1, cv2.LINE_AA)
+            cv2.putText(frame, 'red line', (self.x1_f, self.y1_f), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1,
+                        cv2.LINE_AA)
 
             wards = len(self.counter_violate)
-            cv2.putText(frame, ('Vi pham - ') + str(wards), (60, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, red_color, 1, cv2.LINE_AA)
+            cv2.putText(frame, ('Vi pham - ') + str(wards), (60, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, red_color, 1,
+                        cv2.LINE_AA)
 
             cv2.imshow("frames", frame)
 
@@ -131,3 +143,8 @@ class TrafficViolationProcessor:
 
         self.cap.release()
         cv2.destroyAllWindows()
+
+        for violation_info in violations:
+            print(violation_info)  # In thông tin vi phạm ra console
+
+        return violations
